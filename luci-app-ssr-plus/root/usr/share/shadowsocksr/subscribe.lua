@@ -122,7 +122,7 @@ local function processData(szType, content)
 		result.alias = result.alias .. base64Decode(params.remarks)
 	elseif szType == 'vmess' then
 		local info = jsonParse(content)
-		result.type = 'v2ray'
+		result.type = 'vmess'
 		result.server = info.add
 		result.server_port = info.port
 		result.transport = info.net
@@ -260,7 +260,11 @@ local function processData(szType, content)
 		result.password = password
 	end
 	if not result.alias then
-		result.alias = result.server .. ':' .. result.server_port
+		if result.server and result.server_port then
+			result.alias = result.server .. ':' .. result.server_port
+		else
+			result.alias = "NULL"
+		end
 	end
 	-- alias 不参与 hashkey 计算
 	local alias = result.alias
@@ -283,7 +287,7 @@ local function check_filer(result)
 		local filter_word = split(filter_words, "/")
 		for i, v in pairs(filter_word) do
 			if result.alias:find(v) then
-				log('订阅节点关键字过滤:“' .. v ..'” ，该节点被丢弃')
+				-- log('订阅节点关键字过滤:“' .. v ..'” ，该节点被丢弃')
 				return true
 			end
 		end
@@ -354,12 +358,13 @@ local execute = function()
 							if
 								not result.server or
 								not result.server_port or
+								result.alias == "NULL" or
 								check_filer(result) or
 								result.server:match("[^0-9a-zA-Z%-%.%s]") -- 中文做地址的 也没有人拿中文域名搞，就算中文域也有Puny Code SB 机场
 								then
 								log('丢弃无效节点: ' .. result.type ..' 节点, ' .. result.alias)
 							else
-								log('成功解析: ' .. result.type ..' 节点, ' .. result.alias)
+								-- log('成功解析: ' .. result.type ..' 节点, ' .. result.alias)
 								result.grouphashkey = groupHash
 								tinsert(nodeResult[index], result)
 								cache[groupHash][result.hashkey] = nodeResult[index][#nodeResult[index]]
@@ -377,6 +382,10 @@ local execute = function()
 	do
 		if next(nodeResult) == nil then
 			log("更新失败，没有可用的节点信息")
+			if proxy == '0' then
+				luci.sys.init.start(name)
+				log('订阅失败, 恢复服务')
+			end
 			return
 		end
 		local add, del = 0, 0
@@ -411,22 +420,24 @@ local execute = function()
 		ucic:commit(name)
 		-- 如果原有服务器节点已经不见了就尝试换为第一个节点
 		local globalServer = ucic:get_first(name, 'global', 'global_server', '')
-		local firstServer = ucic:get_first(name, uciType)
-		if firstServer then
-			if not ucic:get(name, globalServer) then
-				luci.sys.call("/etc/init.d/" .. name .. " stop > /dev/null 2>&1 &")
-				ucic:commit(name)
-				ucic:set(name, ucic:get_first(name, 'global'), 'global_server', ucic:get_first(name, uciType))
-				ucic:commit(name)
-				log('当前主服务器节点已被删除，正在自动更换为第一个节点。')
-				luci.sys.call("/etc/init.d/" .. name .. " start > /dev/null 2>&1 &")
+		if globalServer ~= "nil" then
+			local firstServer = ucic:get_first(name, uciType)
+			if firstServer then
+				if not ucic:get(name, globalServer) then
+					luci.sys.call("/etc/init.d/" .. name .. " stop > /dev/null 2>&1 &")
+					ucic:commit(name)
+					ucic:set(name, ucic:get_first(name, 'global'), 'global_server', ucic:get_first(name, uciType))
+					ucic:commit(name)
+					log('当前主服务器节点已被删除，正在自动更换为第一个节点。')
+					luci.sys.call("/etc/init.d/" .. name .. " start > /dev/null 2>&1 &")
+				else
+					log('维持当前主服务器节点。')
+					luci.sys.call("/etc/init.d/" .. name .." restart > /dev/null 2>&1 &")
+				end
 			else
-				log('维持当前主服务器节点。')
-				luci.sys.call("/etc/init.d/" .. name .." restart > /dev/null 2>&1 &")
+				log('没有服务器节点了，停止服务')
+				luci.sys.call("/etc/init.d/" .. name .. " stop > /dev/null 2>&1 &")
 			end
-		else
-			log('没有服务器节点了，停止服务')
-			luci.sys.call("/etc/init.d/" .. name .. " stop > /dev/null 2>&1 &")
 		end
 		log('新增节点数量: ' ..add, '删除节点数量: ' .. del)
 		log('订阅更新成功')
